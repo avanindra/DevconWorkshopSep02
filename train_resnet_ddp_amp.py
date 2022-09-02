@@ -6,27 +6,19 @@ import time
 import os
 import torch.optim as optim
 import torch.nn as nn
-import matplotlib.image as image
 from torch.utils.data.distributed import DistributedSampler
-from torch.cuda.amp.grad_scaler import GradScaler
+from torch.cuda.amp.grad_scaler import GradScaler 
+from torch.cuda.amp import autocast
 import torchvision
 import argparse
 import torch.multiprocessing as mp
 import torch.distributed as dist
-from datetime import datetime
-import matplotlib.image as image
-from datetime import datetime
 from argparse import ArgumentParser
 import torchvision.transforms as transforms
 import resnet
 
-
-
-
 import json
 import random
-import matplotlib.pyplot as plt
-
 
 # torch.set_default_dtype(torch.float16)
 # Creates a GradScaler once at the beginning of training.
@@ -52,8 +44,6 @@ def seed_everything(seed=42):
 
 
 def train(q, gpu):
-
-        
 
         args = q.get()
         rank = gpu #args.nr * args.gpus + gpu
@@ -82,13 +72,13 @@ def train(q, gpu):
 
         train = torchvision.datasets.CIFAR10(root=args.path_to_dataset, train=True, download=True, transform=transform_train)
 
-        trainloader = torch.utils.data.DataLoader(train, batch_size=256, shuffle=True, num_workers=2)
+        trainloader = torch.utils.data.DataLoader(train, batch_size=args.batchsize, shuffle=True, num_workers=2)
 
-        test = torchvision.datasets.CIFAR10(root=args.path_to_dataset, train=False, download=True, transform=transform_test)
+        # test = torchvision.datasets.CIFAR10(root=args.path_to_dataset, train=False, download=True, transform=transform_test)
 
-        testloader = torch.utils.data.DataLoader(test, batch_size=256,shuffle=False, num_workers=2)
+        # testloader = torch.utils.data.DataLoader(test, batch_size=256,shuffle=False, num_workers=2)
 
-        print(len(trainloader) , len(testloader))
+        # print(len(trainloader) , len(testloader))
 
         # log_file = open(args.output + '/log.txt', "a")
 
@@ -105,6 +95,23 @@ def train(q, gpu):
         model = nn.parallel.DistributedDataParallel(model,
                                                 device_ids=[gpu], find_unused_parameters=True)
 
+        profiler = ""
+
+
+        if args.profile:
+
+                profiler = torch.profiler.profile(
+                        activities=[
+                        torch.profiler.ProfilerActivity.CPU,
+                        torch.profiler.ProfilerActivity.CUDA],
+                        profile_memory=True,
+                        schedule=torch.profiler.schedule(
+                        wait=2,
+                        warmup=2,
+                        active=5),
+                        with_stack=False,
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler('/home/wsadmin/resnet_profile') )
+
 
         EPOCHS = 200
         for epoch in range(EPOCHS):
@@ -118,15 +125,20 @@ def train(q, gpu):
                         inputs, labels = inputs.to('cuda'), labels.to('cuda')
                         optimizer.zero_grad()
                 
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                        losses.append(loss.item())
+                        # Runs the forward pass with autocasting.
+                        with autocast():
+                                outputs = model(inputs)
+                                loss = criterion(outputs, labels)
+                                losses.append(loss.item())
 
                         scaler.scale(loss).backward()
                         # scaler.step() first unscales the gradients of the optimizer's assigned params.
                         # If these gradients do not contain infs or NaNs, optimizer.step() is then called,
                         # otherwise, optimizer.step() is skipped.
                         scaler.step(optimizer)
+
+                        if args.profile :
+                                profiler.step()
 
                         # Updates the scale for next iteration.
                         scaler.update()
@@ -135,7 +147,8 @@ def train(q, gpu):
                         
                         if gpu == 0 and i%5== 0 and i > 0:
                                 end = time.time()
-                                print(f'Loss [{epoch+1}, {i}](epoch, minibatch): ', running_loss / 100 , " time per batch : " ,(end - start) / i , " throuput : ", ( i * args.batchsize ) / (end - start) , " imgs/sec " )
+                                print(f'Loss [{epoch+1}, {i}](epoch, minibatch): ', running_loss / 100 , " throuput : ", ( 5 * args.batchsize * 2 ) / (end - start) , " imgs/sec " )
+                                start = time.time()
 
                         running_loss = 0.0
 
@@ -147,9 +160,6 @@ def train(q, gpu):
 
 #     torch.save(model.state_dict(), args.output + f'/final_model.pth')
 #     log_file.close()
-
-
-
 
 if __name__== '__main__':
     parser = argparse.ArgumentParser()
@@ -169,18 +179,17 @@ if __name__== '__main__':
                         help='number of classes in labels: 2 or 3')
     parser.add_argument('-p', '--pretrain', default='/glb/home/inatjv/Builds/CT_Image_Recon_Dev/bin/training_output/checkpoint_epoch_1.pth', # it must ends with .pth
                         help='pretrain_model, must end with .pth, otherwise it cannot read')
-    parser.add_argument('-bs', '--batchsize', default=1, type=int,
-                        help='batch size per gpu. default=8')
+    parser.add_argument('-bs', '--batchsize', default=256, type=int,
+                        help='batch size per gpu. default=256')
     parser.add_argument('-lr', '--lr', default=0.0001, type=float,
                         help='learning rate')
+    parser.add_argument('-profile', '--profile', default=False, type=bool,
+                        help='whether to profile the code')
 
     args = parser.parse_args() 
   
-    today = datetime.now()
-
     args.world_size = args.gpus * args.nodes     
-
-    args.world_size = args.gpus * args.nodes                
+              
     os.environ['MASTER_ADDR'] = 'localhost'                 
     os.environ['MASTER_PORT'] = '12390'                                                                #
     smp = mp.get_context('spawn')

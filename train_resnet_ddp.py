@@ -6,26 +6,19 @@ import time
 import os
 import torch.optim as optim
 import torch.nn as nn
-import matplotlib.image as image
 from torch.utils.data.distributed import DistributedSampler
 from torch.cuda.amp.grad_scaler import GradScaler
 import torchvision
 import argparse
 import torch.multiprocessing as mp
 import torch.distributed as dist
-from datetime import datetime
-import matplotlib.image as image
-from datetime import datetime
 from argparse import ArgumentParser
 import torchvision.transforms as transforms
 import resnet
 
-
-
-
 import json
 import random
-import matplotlib.pyplot as plt
+
 
 
 # torch.set_default_dtype(torch.float16)
@@ -103,17 +96,24 @@ def train(q, gpu):
         model = nn.parallel.DistributedDataParallel(model,
                                                 device_ids=[gpu], find_unused_parameters=True)
 
-        profiler = torch.profiler.profile(
-                    activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA],
-                    profile_memory=True,
-                    schedule=torch.profiler.schedule(
-                    wait=2,
-                    warmup=2,
-                    active=5),
-                    with_stack=False,
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler('/home/ubuntu/resnet_profile') )
+
+
+        profiler = ""
+
+
+        if args.profile:
+
+                profiler = torch.profiler.profile(
+                        activities=[
+                        torch.profiler.ProfilerActivity.CPU,
+                        torch.profiler.ProfilerActivity.CUDA],
+                        profile_memory=True,
+                        schedule=torch.profiler.schedule(
+                        wait=2,
+                        warmup=2,
+                        active=5),
+                        with_stack=False,
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler('/home/wsadmin/resnet_profile') )
 
 
         EPOCHS = 200
@@ -135,13 +135,16 @@ def train(q, gpu):
                         loss.backward()
                         optimizer.step()
 
-                        profiler.step()
+                        if(args.profile):
+                                profiler.step()
                         
                         running_loss += loss.item()
                         
                         if gpu == 0 and i%5== 0 and i > 0:
                                 end = time.time()
-                                print(f'Loss [{epoch+1}, {i}](epoch, minibatch): ', running_loss / 100 , " time per batch : " ,(end - start) / i , " throuput : ", ( i * args.batchsize ) / (end - start) , " imgs/sec " )
+                                print(f'Loss [{epoch+1}, {i}](epoch, minibatch): ', running_loss / 100 , " throuput : ", ( 5 * args.batchsize * 2 ) / (end - start) , " imgs/sec " )
+                                start = time.time()
+                                # start = end
                                 
                         running_loss = 0.0
 
@@ -163,7 +166,7 @@ if __name__== '__main__':
 
     parser.add_argument('-ptd', '--path_to_dataset', default='~/cifar', type=str,
                         help='output model directory')
-    parser.add_argument('-o', '--output', default='/glb/home/inatjv/Builds/CT_Image_Recon_Dev/bin/training_output/siamese/', type=str,
+    parser.add_argument('-o', '--profile_dir', default='/home/wsadmin/resnet_profile', type=str,
                         help='output model directory')
     parser.add_argument('-l', '--loss', default='weighted_BCE', type=str,
                         help='loss function type: weighted_BCE, Focal_loss, TCE, RecallCE, Lovasz, OhemCE, SoftIOU0, SoftIOU1')
@@ -174,14 +177,13 @@ if __name__== '__main__':
     parser.add_argument('-lr', '--lr', default=0.0001, type=float,
                         help='learning rate')
 
-    parser.add_argument('-profile', '--progile', default=False, type=bool,
+    parser.add_argument('-profile', '--profile', default=False, type=bool,
                         help='whether to profile the code')
 
 
 
     args = parser.parse_args() 
   
-    today = datetime.now()
 
     args.world_size = args.gpus * args.nodes     
 
